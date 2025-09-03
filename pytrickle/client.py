@@ -18,7 +18,6 @@ from . import ErrorCallback
 from .frame_processor import FrameProcessor
 from .decoder import DEFAULT_MAX_FRAMERATE
 from .frame_skipper import AdaptiveFrameSkipper, FrameSkipConfig, FrameProcessingResult
-from .monotonic_audio import MonotonicAudioSynchronizer
 
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,8 @@ class TrickleClient:
         send_data_interval: Optional[float] = 0.333,
         error_callback: Optional[ErrorCallback] = None,
         max_queue_size: int = 300,
-        frame_skip_config: Optional[FrameSkipConfig] = None
+        frame_skip_config: Optional[FrameSkipConfig] = None,
+        enable_audio_transcription: bool = False
     ):
         """Initialize TrickleClient with optional AdaptiveFrameSkipper for intelligent frame management.
         
@@ -46,6 +46,7 @@ class TrickleClient:
             error_callback: Optional error callback (if None, uses frame_processor.error_callback)
             max_queue_size: Maximum size for frame queues
             frame_skip_config: Optional frame skipping configuration (None = no frame skipping)
+            enable_audio_transcription: Enable background audio processing for transcription
         """
         self.protocol = protocol
         self.frame_processor = frame_processor
@@ -58,6 +59,7 @@ class TrickleClient:
         # Queue configuration
         self.frame_skip_config = frame_skip_config
         self.max_queue_size = max_queue_size
+        self.enable_audio_transcription = enable_audio_transcription
         
         # Connect protocol error callback to client error handling
         if not self.protocol.error_callback:
@@ -86,9 +88,6 @@ class TrickleClient:
             )
         else:
             self.frame_skipper = None
-        
-        # Audio synchronizer for monotonic timestamp progression
-        self.audio_synchronizer = MonotonicAudioSynchronizer()
         
     async def start(self, request_id: str = "default"):
         """Start the trickle client."""
@@ -167,8 +166,20 @@ class TrickleClient:
         """Get comprehensive processing statistics."""
         stats = {
             "input_queue_size": self.input_queue.qsize(),
-            "output_queue_size": self.output_queue.qsize()
+            "output_queue_size": self.output_queue.qsize(),
+            "audio_transcription_enabled": self.enable_audio_transcription
         }
+        
+        # Add frame skipper statistics if available
+        if self.frame_skipper:
+            stats.update({
+                "frame_skipper_enabled": True,
+                "video_frames_processed": self.frame_skipper.video_frame_count,
+                "skip_interval": self.frame_skipper.skip_interval,
+                "target_fps": self.frame_skipper.config.target_fps
+            })
+        else:
+            stats["frame_skipper_enabled"] = False
 
         return stats
     
@@ -287,16 +298,18 @@ class TrickleClient:
                             logger.warning(f"Frame processor returned None for video frame")
                             
                     elif isinstance(frame, AudioFrame):
-                        logger.debug(f"Processing audio frame with frame processor: {frame.samples.shape}")
+                        logger.debug(f"Dual-path audio processing: {frame.samples.shape}")
                         
-                        # Audio frames are never skipped - always process them
-                        # Audio synchronization will happen at egress before encoder
-                        processed_frames = await self.frame_processor.process_audio_async(frame)
-                        if processed_frames:
-                            output = AudioOutput(processed_frames, self.request_id)
-                            await self.output_queue.put(output)
-                        else:
-                            logger.warning(f"Frame processor returned None for audio frame")
+                        # DUAL PATH: 
+                        # Path 1 (immediate): Send original frame to output for perfect timing
+                        output = AudioOutput([frame], self.request_id)
+                        await self.output_queue.put(output)
+                        
+                        # Path 2 (background): Process for transcription without blocking timing
+                        if self.enable_audio_transcription and hasattr(self.frame_processor, 'process_audio_async'):
+                            asyncio.create_task(self._process_audio_for_transcription(frame))
+                        
+                        # Continue immediately to next frame - don't wait for transcription
                     else:
                         logger.warning(f"Received unknown frame type: {type(frame)}")
                         
@@ -318,6 +331,7 @@ class TrickleClient:
                             fallback_output = VideoOutput(frame, self.request_id)
                             await self.output_queue.put(fallback_output)
                         elif isinstance(frame, AudioFrame):
+                            # Use direct passthrough for audio timing preservation
                             fallback_output = AudioOutput([frame], self.request_id)
                             await self.output_queue.put(fallback_output)
             
@@ -337,6 +351,37 @@ class TrickleClient:
                 except Exception as cb_error:
                     logger.error(f"Error in error callback: {cb_error}")
 
+    async def _process_audio_for_transcription(self, frame: AudioFrame):
+        """Process audio frame for transcription in background without affecting main stream timing."""
+        try:
+            logger.debug(f"Background transcription processing for audio frame: {frame.samples.shape}")
+            
+            # Process audio for transcription (runs in background)
+            transcription_result = await self.frame_processor.process_audio_async(frame)
+            
+            if transcription_result:
+                # Publish transcription data via data channel
+                transcription_data = {
+                    "type": "transcription",
+                    "timestamp": frame.timestamp,
+                    "time_base": [frame.time_base.numerator, frame.time_base.denominator],
+                    "sample_rate": frame.rate,
+                    "nb_samples": frame.nb_samples
+                }
+                
+                # If transcription_result is a list of processed frames, extract any transcription text
+                if isinstance(transcription_result, list):
+                    # For now, just log that transcription was processed
+                    # The actual transcription text would come from the frame processor implementation
+                    transcription_data["processed_frames"] = len(transcription_result)
+                
+                await self.publish_data(json.dumps(transcription_data))
+                logger.debug(f"Published transcription data for frame {frame.timestamp}")
+            
+        except Exception as e:
+            logger.error(f"Error in background audio transcription: {e}")
+            # Don't re-raise - this is background processing and shouldn't affect main flow
+
     async def _egress_loop(self):
         """Handle outgoing frames."""
         try:
@@ -347,10 +392,7 @@ class TrickleClient:
                         # Get frame from output queue
                         frame = await asyncio.wait_for(self.output_queue.get(), timeout=0.5)
                         if frame is not None:
-                            # Apply precise audio synchronization right before encoder
-                            if isinstance(frame, AudioOutput):
-                                for audio_frame in frame.frames:
-                                    self.audio_synchronizer.synchronize_audio_frame(audio_frame)
+                            # Audio frames now have original timestamps for perfect timing
                             yield frame
                         else:
                             # None frame indicates shutdown

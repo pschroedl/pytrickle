@@ -64,14 +64,17 @@ class MonotonicAudioSynchronizer:
             # Original timestamp would break monotonicity, use calculated next timestamp
             corrected_timestamp = self.last_audio_timestamp + self.expected_interval
         
-        # Update timestamp for monotonic progression
-        frame.timestamp = corrected_timestamp
+        # Create new frame with corrected timestamp to avoid mutating input
+        if corrected_timestamp != frame.timestamp:
+            corrected_frame = frame.from_audio_frame(timestamp=corrected_timestamp)
+        else:
+            corrected_frame = frame
         
         # Update state
         self.last_audio_timestamp = corrected_timestamp
         self.frame_count += 1
         
-        return frame
+        return corrected_frame
     
     def _calculate_interval(self, frame: AudioFrame) -> int:
         """Calculate actual audio frame interval based on frame samples and sample rate."""

@@ -106,6 +106,7 @@ class AdaptiveFrameSkipper:
             return
         
         frames_to_drop = min(queue_size - self.config.max_queue_size, self.config.max_cleanup_frames)
+        audio_frames_to_requeue = []
         
         # Drop frames, but preserve any audio frames we encounter
         for _ in range(frames_to_drop):
@@ -113,14 +114,18 @@ class AdaptiveFrameSkipper:
                 frame = await asyncio.wait_for(input_queue.get(), timeout=timeout)
                 if frame is None:
                     await input_queue.put(None)  # Re-queue sentinel
-                    return
+                    break
                 
                 if isinstance(frame, AudioFrame):
-                    # Audio frame - put it back in the queue
-                    await input_queue.put(frame)
+                    # Audio frame - save for requeuing to avoid infinite loop
+                    audio_frames_to_requeue.append(frame)
                     
             except asyncio.TimeoutError:
                 break  # No more frames available
+        
+        # Requeue audio frames that were preserved
+        for audio_frame in audio_frames_to_requeue:
+            await input_queue.put(audio_frame)
 
     def _process_frame(self, frame: Union[VideoFrame, AudioFrame]) -> FrameResult:
         """Process a frame to determine if it should be skipped."""

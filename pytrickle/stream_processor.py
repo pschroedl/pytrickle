@@ -29,6 +29,7 @@ class StreamProcessor:
         name: str = "stream-processor",
         port: int = 8000,
         frame_skip_config: Optional[FrameSkipConfig] = None,
+        enable_audio_transcription: bool = False,
         **server_kwargs
     ):
         """
@@ -43,6 +44,7 @@ class StreamProcessor:
             name: Processor name
             port: Server port
             frame_skip_config: Optional frame skipping configuration (None = no frame skipping)
+            enable_audio_transcription: Enable background audio processing for transcription
             **server_kwargs: Additional arguments passed to StreamServer
         """
         # Validate that processors are async functions
@@ -60,6 +62,7 @@ class StreamProcessor:
         self.name = name
         self.port = port
         self.frame_skip_config = frame_skip_config
+        self.enable_audio_transcription = enable_audio_transcription
         self.server_kwargs = server_kwargs
         
         # Create internal frame processor
@@ -77,6 +80,7 @@ class StreamProcessor:
             frame_processor=self._frame_processor,
             port=port,
             frame_skip_config=frame_skip_config,
+            enable_audio_transcription=enable_audio_transcription,
             **server_kwargs
         )
     

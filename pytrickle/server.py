@@ -63,6 +63,8 @@ class StreamServer:
         app_kwargs: Optional[Dict[str, Any]] = None,
         # Frame skipping configuration
         frame_skip_config: Optional[FrameSkipConfig] = None,
+        # Audio transcription configuration
+        enable_audio_transcription: bool = False,
 
     ):
         """Initialize StreamServer.
@@ -85,6 +87,7 @@ class StreamServer:
             on_shutdown: List of shutdown handlers
             app_kwargs: Additional kwargs for aiohttp.web.Application
             frame_skip_config: Optional frame skipping configuration (None = no frame skipping)
+            enable_audio_transcription: Enable background audio processing for transcription
         """
         self.frame_processor = frame_processor
         self.port = port
@@ -108,6 +111,7 @@ class StreamServer:
         
         # Frame skipping configuration
         self.frame_skip_config = frame_skip_config
+        self.enable_audio_transcription = enable_audio_transcription
         
         # Stream management - simple and direct
         self.current_client: Optional[TrickleClient] = None
@@ -339,6 +343,7 @@ class StreamServer:
                 frame_processor=self.frame_processor,
                 control_handler=self._handle_control_message,
                 frame_skip_config=self.frame_skip_config,
+                enable_audio_transcription=self.enable_audio_transcription,
             )
             
             # Update state

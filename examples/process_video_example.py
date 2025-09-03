@@ -10,7 +10,7 @@ import torch
 import cv2
 import numpy as np
 from pytrickle import StreamProcessor
-from pytrickle.frames import VideoFrame
+from pytrickle.frames import VideoFrame, AudioFrame
 from pytrickle.frame_skipper import FrameSkipConfig
 
 logging.basicConfig(level=logging.INFO)
@@ -186,6 +186,30 @@ async def process_video(frame: VideoFrame) -> VideoFrame:
     
     return frame.replace_tensor(result_tensor)
 
+async def process_audio(frame: AudioFrame) -> list[AudioFrame]:
+    """
+    Process audio frame for transcription.
+    
+    In a real transcription pipeline, this would:
+    1. Convert audio to format expected by transcription model
+    2. Buffer audio frames until sufficient data for transcription
+    3. Run transcription inference 
+    4. Return processed frames with transcription metadata
+    
+    For this example, we just log and return the original frame.
+    """
+    logger.info(f"Processing audio frame: {frame.nb_samples} samples at {frame.rate}Hz")
+    
+    # Simulate transcription processing delay
+    await asyncio.sleep(0.01)  # Small delay to simulate transcription work
+    
+    # In real implementation, you would:
+    # - Buffer audio frames
+    # - Run transcription model
+    # - Add transcription text to frame metadata
+    
+    return [frame]
+
 async def update_params(params: dict):
     """Update green hue intensity (0.0 to 1.0)."""
     global intensity, delay
@@ -204,6 +228,7 @@ async def update_params(params: dict):
 if __name__ == "__main__":
     processor = StreamProcessor(
         video_processor=process_video,
+        audio_processor=process_audio,  # Enable transcription processing
         model_loader=load_model,
         param_updater=update_params,
         on_stream_stop=on_stream_stop,
@@ -211,5 +236,7 @@ if __name__ == "__main__":
         port=8001,
         # Frame skipping configuration (optional)
         frame_skip_config=FrameSkipConfig(),  # Enable intelligent frame skipping
+        # Audio transcription (optional) - enables dual-path processing
+        enable_audio_transcription=True,  # Enable background transcription processing
     )
     processor.run()
