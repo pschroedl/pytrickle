@@ -286,7 +286,7 @@ class TrickleClient:
             logger.error(f"Error in video processing loop: {e}")
     
     async def _process_audio_frames(self):
-        """Process audio frames without skipping."""
+        """Process audio frames with immediate output + optional background processing."""
         try:
             while not self.stop_event.is_set() and not self.error_event.is_set():
                 try:
@@ -297,16 +297,45 @@ class TrickleClient:
                     except asyncio.TimeoutError:
                         continue
                     
-                    processed_frames = await self.frame_processor.process_audio_async(frame)
-                    if processed_frames:
-                        output = AudioOutput(processed_frames, self.request_id)
-                        await self.output_queue.put(output)
+                    # CORE PRINCIPLE: Always output original frame immediately for timing
+                    output = AudioOutput([frame], self.request_id)
+                    await self.output_queue.put(output)
+                    
+                    # Optional background processing for transcription (doesn't block timing)
+                    if hasattr(self.frame_processor, 'process_audio_async'):
+                        asyncio.create_task(self._process_audio_for_transcription(frame))
                     
                 except Exception as e:
-                    logger.error(f"Error processing audio frame: {e}")
+                    logger.error(f"Error in audio processing: {e}")
                     
         except Exception as e:
             logger.error(f"Error in audio processing loop: {e}")
+    
+    async def _process_audio_for_transcription(self, frame: AudioFrame):
+        """Process audio in background for transcription without affecting main stream timing."""
+        try:
+            logger.debug(f"Background transcription processing: {frame.samples.shape}")
+            
+            # This can take 100-500ms for transcription, but doesn't affect main stream
+            result = await self.frame_processor.process_audio_async(frame)
+            
+            # Publish transcription data via data channel
+            if result:
+                transcription_data = {
+                    "type": "audio_transcription",
+                    "timestamp": frame.timestamp,
+                    "sample_rate": frame.rate,
+                    "nb_samples": frame.nb_samples
+                }
+                
+                if isinstance(result, list):
+                    transcription_data["processed_frames"] = len(result)
+                
+                await self.publish_data(json.dumps(transcription_data))
+                logger.debug(f"Published transcription data for timestamp {frame.timestamp}")
+        except Exception as e:
+            logger.error(f"Background audio transcription error: {e}")
+            # Don't re-raise - this is background processing
 
     async def _egress_loop(self):
         """Handle outgoing frames."""
